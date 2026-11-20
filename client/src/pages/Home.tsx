@@ -22,11 +22,13 @@ import {
   Send,
   Sparkles,
   Trash2,
+  UserRound,
   X,
 } from "lucide-react";
 
 type Section = "home" | "inbox" | "spaces" | "notes" | "links";
 type Space = { id: string; name: string; createdAt: string };
+type UserProfile = { displayName: string };
 type SavedItem = {
   id: string;
   title: string;
@@ -36,8 +38,8 @@ type SavedItem = {
   spaceId?: string;
   createdAt: string;
 };
-type WorkspaceData = { spaces: Space[]; items: SavedItem[] };
-type Dialog = { type: "space" } | { type: "link" } | { type: "item"; itemId: string } | null;
+type WorkspaceData = { profile: UserProfile; spaces: Space[]; items: SavedItem[] };
+type Dialog = { type: "profile" } | { type: "space" } | { type: "link" } | { type: "item"; itemId: string } | null;
 
 const STORAGE_KEY = "layer-workspace-local-v2";
 const NAV: { id: Section; label: string; icon: typeof Inbox }[] = [
@@ -49,18 +51,23 @@ const NAV: { id: Section; label: string; icon: typeof Inbox }[] = [
 ];
 
 function loadWorkspace(): WorkspaceData {
-  if (typeof window === "undefined") return { spaces: [], items: [] };
+  if (typeof window === "undefined") return { profile: { displayName: "" }, spaces: [], items: [] };
   try {
     const saved = window.localStorage.getItem(STORAGE_KEY);
-    if (!saved) return { spaces: [], items: [] };
-    const parsed = JSON.parse(saved) as WorkspaceData;
+    if (!saved) return { profile: { displayName: "" }, spaces: [], items: [] };
+    const parsed = JSON.parse(saved) as Partial<WorkspaceData>;
     return {
+      profile: { displayName: typeof parsed.profile?.displayName === "string" ? parsed.profile.displayName : "" },
       spaces: Array.isArray(parsed.spaces) ? parsed.spaces : [],
       items: Array.isArray(parsed.items) ? parsed.items : [],
     };
   } catch {
-    return { spaces: [], items: [] };
+    return { profile: { displayName: "" }, spaces: [], items: [] };
   }
+}
+
+function getInitials(name: string) {
+  return name.trim().split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").toUpperCase();
 }
 
 function formatDate(value: string) {
@@ -92,6 +99,7 @@ export default function Home() {
   const [selectedSpace, setSelectedSpace] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [spaceName, setSpaceName] = useState("");
+  const [profileNameDraft, setProfileNameDraft] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [linkTitle, setLinkTitle] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -207,6 +215,14 @@ export default function Home() {
     toast.success("Space created", { description: name });
   };
 
+  const saveProfile = (event: FormEvent) => {
+    event.preventDefault();
+    const displayName = profileNameDraft.trim().slice(0, 48);
+    setWorkspace((current) => ({ ...current, profile: { displayName } }));
+    setDialog(null);
+    toast.success(displayName ? "Profile saved" : "Profile name cleared");
+  };
+
   const saveLink = (event: FormEvent) => {
     event.preventDefault();
     const raw = linkUrl.trim();
@@ -234,6 +250,7 @@ export default function Home() {
   const deleteSpace = (id: string) => {
     const space = workspace.spaces.find((item) => item.id === id);
     setWorkspace((current) => ({
+      profile: current.profile,
       spaces: current.spaces.filter((item) => item.id !== id),
       items: current.items.map((item) => item.spaceId === id ? { ...item, spaceId: undefined } : item),
     }));
@@ -293,7 +310,11 @@ export default function Home() {
           </a>
           <button className="icon-button close-nav" onClick={() => setMobileNavOpen(false)} aria-label="Close navigation"><X size={18} /></button>
         </div>
-        <div className="workspace-label"><span className="workspace-avatar">A</span><span><small>YOUR WORKSPACE</small><strong>Aathir’s space</strong></span><ChevronDown size={15} /></div>
+        <button type="button" className="workspace-label" onClick={() => { setProfileNameDraft(workspace.profile.displayName); setDialog({ type: "profile" }); setMobileNavOpen(false); }} aria-label={workspace.profile.displayName ? `Edit profile for ${workspace.profile.displayName}` : "Set up your profile"}>
+          <span className="workspace-avatar">{workspace.profile.displayName ? getInitials(workspace.profile.displayName) : <UserRound size={16} />}</span>
+          <span><small>YOUR PROFILE</small><strong>{workspace.profile.displayName || "Set up your profile"}</strong></span>
+          <ChevronDown size={15} />
+        </button>
         <nav className="nav-list" aria-label="Main menu">
           <span className="nav-caption">WORKSPACE</span>
           {NAV.map(({ id, label, icon: Icon }) => (
@@ -321,7 +342,7 @@ export default function Home() {
         <header className="topbar">
           <div className="topbar-title-group">
             <button className="icon-button mobile-menu" onClick={() => setMobileNavOpen(true)} aria-label="Open navigation"><Menu size={19} /></button>
-            <div><span className="breadcrumb-label">AATHIR’S SPACE</span><h1>{heading}</h1></div>
+            <div><span className="breadcrumb-label">YOUR WORKSPACE</span><h1>{heading}</h1></div>
           </div>
           <div className="topbar-actions">
             <button className="search-trigger" onClick={() => setSearchOpen(true)} aria-label="Search workspace"><Search size={17} /><span>Search</span><kbd><Command size={11} /> K</kbd></button>
@@ -375,6 +396,8 @@ export default function Home() {
       <nav className="mobile-tabbar" aria-label="Quick navigation">{NAV.filter((item) => item.id !== "links").map(({ id, label, icon: Icon }) => <button key={id} className={section === id ? "mobile-tab-active" : ""} onClick={() => goTo(id)}><Icon size={19} /><span>{label}</span></button>)}</nav>
 
       {searchOpen && <div className="modal-backdrop search-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setSearchOpen(false); }}><div className="search-modal" role="dialog" aria-modal="true" aria-label="Search your workspace"><div className="search-input-row"><Search size={19} /><input ref={searchRef} value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search notes, links, and spaces…" /><kbd>ESC</kbd><button className="icon-button" onClick={() => setSearchOpen(false)} aria-label="Close search"><X size={17} /></button></div><div className="search-results"><span className="eyebrow">{searchQuery ? "MATCHING ITEMS" : "RECENT ITEMS"}</span>{searchResults.items.length ? searchResults.items.map((item) => <button className="search-result" key={item.id} onClick={() => { setSearchOpen(false); setDialog({ type: "item", itemId: item.id }); }}><span className="result-icon">{item.type === "link" ? <Globe2 size={16} /> : <FileText size={16} />}</span><span><strong>{item.title}</strong><small>{item.content}</small></span><ArrowUpRight size={15} /></button>) : <p className="search-no-results">No saved items match that search.</p>}{searchResults.spaces.length > 0 && <><span className="eyebrow search-spaces-label">SPACES</span>{searchResults.spaces.map((space) => <button className="search-result" key={space.id} onClick={() => { setSearchOpen(false); chooseSpace(space.id); }}><span className="result-icon"><Layers3 size={16} /></span><span><strong>{space.name}</strong><small>Space</small></span><ArrowRight size={15} /></button>)}</>}</div><div className="search-hint"><span>Search stays on this device</span><span><kbd>⌘ K</kbd> to open</span></div></div></div>}
+
+      {dialog?.type === "profile" && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><form className="form-modal" onSubmit={saveProfile} role="dialog" aria-modal="true" aria-labelledby="profile-modal-title"><div className="modal-top"><span className="modal-symbol"><UserRound size={18} /></span><button type="button" className="icon-button" onClick={() => setDialog(null)} aria-label="Close"><X size={18} /></button></div><span className="eyebrow">MAKE IT YOURS</span><h2 id="profile-modal-title">{workspace.profile.displayName ? "Edit your profile" : "Set up your profile"}</h2><p>Your display name personalizes this workspace. It stays in this browser.</p><label className="field-label" htmlFor="profile-display-name">Display name</label><input id="profile-display-name" autoFocus autoComplete="nickname" value={profileNameDraft} onChange={(event) => setProfileNameDraft(event.target.value)} placeholder="What should we call you?" maxLength={48} /><div className="modal-actions"><button className="cancel-button" type="button" onClick={() => setDialog(null)}>Cancel</button><button className="gold-button" type="submit"><Check size={16} /> Save profile</button></div></form></div>}
 
       {dialog?.type === "space" && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><form className="form-modal" onSubmit={createSpace} role="dialog" aria-modal="true" aria-labelledby="space-modal-title"><div className="modal-top"><span className="modal-symbol"><Layers3 size={18} /></span><button type="button" className="icon-button" onClick={() => setDialog(null)} aria-label="Close"><X size={18} /></button></div><span className="eyebrow">MAKE ROOM FOR A THREAD</span><h2 id="space-modal-title">Create a space</h2><p>Gather notes and links around a project, topic, or question.</p><label className="field-label" htmlFor="space-name">Space name</label><input id="space-name" autoFocus value={spaceName} onChange={(event) => setSpaceName(event.target.value)} placeholder="e.g. Product ideas" maxLength={48} /><div className="modal-actions"><button className="cancel-button" type="button" onClick={() => setDialog(null)}>Cancel</button><button className="gold-button" type="submit" disabled={!spaceName.trim()}><Plus size={16} /> Create space</button></div></form></div>}
 

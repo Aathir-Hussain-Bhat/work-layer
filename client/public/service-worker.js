@@ -1,5 +1,5 @@
 const CACHE_PREFIX = "work-layer-shell-";
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+const CACHE_NAME = `${CACHE_PREFIX}v2`;
 const APP_BASE = self.registration.scope;
 const APP_SHELL = [APP_BASE, `${APP_BASE}manifest.json`, `${APP_BASE}layer-icon.svg`];
 

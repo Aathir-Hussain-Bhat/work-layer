@@ -12,12 +12,13 @@ The original dashboard had a polished visual concept, but its primary navigation
 - Search checks saved item text, URLs, and space names; `Ctrl/Cmd + K` opens it.
 - Item details can open saved links or remove an item.
 - A JSON backup can be downloaded from the navigation panel.
+- Each visitor can optionally set a display name from their profile control; no owner name is prefilled.
 - The responsive interface uses dark navy and gold accents, with a compact mobile tab bar and a drawer for the full navigation.
 - PWA title, icon, manifest colors, and offline cache version were updated to match.
 
 ## Storage and privacy
 
-Workspace data is stored in this browser's `localStorage`; it is not sent to a server or synced to another device. Clearing browser site data can remove it, so use **Download a backup** to keep a JSON copy. This build intentionally adds no account, cloud service, or analytics connection.
+Workspace data, including the optional display name, is stored in this browser's `localStorage`; it is not sent to a server or synced to another device. Clearing browser site data can remove it, so use **Download a backup** to keep a JSON copy. This build intentionally adds no account, cloud service, or analytics connection.
 
 ## Run locally
 

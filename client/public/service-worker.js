@@ -1,4 +1,5 @@
-const CACHE_NAME = "layer-shell-v2";
+const CACHE_PREFIX = "work-layer-shell-";
+const CACHE_NAME = `${CACHE_PREFIX}v1`;
 const APP_BASE = self.registration.scope;
 const APP_SHELL = [APP_BASE, `${APP_BASE}manifest.json`, `${APP_BASE}layer-icon.svg`];
 
@@ -11,7 +12,7 @@ self.addEventListener("activate", (event) => {
   event.waitUntil(
     caches
       .keys()
-      .then((keys) => Promise.all(keys.filter((key) => key !== CACHE_NAME).map((key) => caches.delete(key)))),
+      .then((keys) => Promise.all(keys.filter((key) => key.startsWith(CACHE_PREFIX) && key !== CACHE_NAME).map((key) => caches.delete(key)))),
   );
   self.clients.claim();
 });

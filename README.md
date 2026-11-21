@@ -9,16 +9,18 @@ The original dashboard had a polished visual concept, but its primary navigation
 - Quick capture saves a note or recognizes a pasted HTTP(S) URL as a link.
 - Spaces group notes and links; deleting a space moves its captures back to the inbox.
 - Inbox, Notes, Links, Spaces, and Home have distinct working views.
-- Search checks saved item text, URLs, and space names; `Ctrl/Cmd + K` opens it.
-- Item details can open saved links or remove an item.
+- Search checks saved item text, URLs, tags, and space names; `Ctrl/Cmd + K` opens it.
+- Saved notes and links can be edited, moved between Inbox and Spaces, tagged, or copied to the clipboard.
+- Quick capture and item editing support up to four compressed image attachments per item; tags can filter lists.
+- Item details show attached images and provide quick copy, edit, open-link, and delete actions.
 - A JSON backup can be downloaded from the navigation panel.
 - Each visitor can optionally set a display name from their profile control; no owner name is prefilled.
-- The responsive interface uses dark navy and gold accents, with a compact mobile tab bar and a drawer for the full navigation.
+- The responsive interface keeps its warm paper palette, rust and olive accents, compact mobile tab bar, and drawer for full navigation.
 - PWA title, icon, manifest colors, and offline cache version were updated to match.
 
 ## Storage and privacy
 
-Workspace data, including the optional display name, is stored in this browser's `localStorage`; it is not sent to a server or synced to another device. Clearing browser site data can remove it, so use **Download a backup** to keep a JSON copy. This build intentionally adds no account, cloud service, or analytics connection.
+Workspace data, including the optional display name, tags, and compressed image attachments, is stored in this browser's `localStorage`; it is not sent to a server or synced to another device. Image attachments share a bounded local storage budget, and backups include the saved item data. Clearing browser site data can remove it, so use **Download a backup** to keep a JSON copy. This build intentionally adds no account, cloud service, or analytics connection.
 
 ## Run locally
 

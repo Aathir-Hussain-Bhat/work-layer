@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type ReactNode } from "react";
 import { toast } from "sonner";
 import {
   ArrowDownLeft,
@@ -9,18 +9,22 @@ import {
   ChevronDown,
   CircleHelp,
   Command,
+  Copy,
   Download,
   FileText,
   FolderOpen,
   Globe2,
+  ImagePlus,
   Inbox,
   Layers3,
   Link2,
   Menu,
+  Pencil,
   PenLine,
   Plus,
   Search,
   Send,
+  Tag,
   Trash2,
   UserRound,
   X,
@@ -29,6 +33,7 @@ import {
 type Section = "home" | "inbox" | "spaces" | "notes" | "links";
 type Space = { id: string; name: string; createdAt: string };
 type UserProfile = { displayName: string };
+type ImageAttachment = { id: string; name: string; dataUrl: string };
 type SavedItem = {
   id: string;
   title: string;
@@ -36,12 +41,17 @@ type SavedItem = {
   type: "note" | "link";
   url?: string;
   spaceId?: string;
+  tags?: string[];
+  images?: ImageAttachment[];
   createdAt: string;
 };
 type WorkspaceData = { profile: UserProfile; spaces: Space[]; items: SavedItem[] };
-type Dialog = { type: "profile" } | { type: "space" } | { type: "link" } | { type: "item"; itemId: string } | null;
+type Dialog = { type: "profile" } | { type: "space" } | { type: "link" } | { type: "item"; itemId: string } | { type: "edit"; itemId: string } | null;
 
 const STORAGE_KEY = "layer-workspace-local-v2";
+const MAX_IMAGES_PER_ITEM = 4;
+const MAX_IMAGE_DATA_CHARS = 480_000;
+const MAX_WORKSPACE_IMAGE_CHARS = 1_200_000;
 const NAV: { id: Section; label: string; icon: typeof Inbox }[] = [
   { id: "home", label: "Home", icon: FolderOpen },
   { id: "inbox", label: "Inbox", icon: Inbox },
@@ -59,7 +69,11 @@ function loadWorkspace(): WorkspaceData {
     return {
       profile: { displayName: typeof parsed.profile?.displayName === "string" ? parsed.profile.displayName : "" },
       spaces: Array.isArray(parsed.spaces) ? parsed.spaces : [],
-      items: Array.isArray(parsed.items) ? parsed.items : [],
+      items: Array.isArray(parsed.items) ? parsed.items.map((item) => ({
+        ...item,
+        tags: Array.isArray(item.tags) ? normalizeTags(item.tags) : [],
+        images: Array.isArray(item.images) ? item.images.filter((image) => typeof image?.id === "string" && typeof image?.name === "string" && typeof image?.dataUrl === "string" && image.dataUrl.startsWith("data:image/")) : [],
+      })) : [],
     };
   } catch {
     return { profile: { displayName: "" }, spaces: [], items: [] };
@@ -91,17 +105,67 @@ function getLinkTitle(url: string) {
   }
 }
 
+function normalizeTags(value: string | readonly string[]) {
+  const entries = typeof value === "string" ? value.split(/[\n,]/) : value;
+  const seen = new Set<string>();
+  return entries.map((tag) => tag.trim().replace(/^#+/, "").slice(0, 24)).filter((tag) => {
+    const key = tag.toLocaleLowerCase();
+    if (!tag || seen.has(key) || seen.size >= 8) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+async function compressImage(file: File): Promise<ImageAttachment> {
+  if (!file.type.startsWith("image/")) throw new Error("Choose an image file.");
+  const bitmap = await createImageBitmap(file);
+  try {
+    let maxDimension = 1400;
+    let quality = 0.78;
+    for (let attempt = 0; attempt < 7; attempt += 1) {
+      const scale = Math.min(1, maxDimension / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      const context = canvas.getContext("2d");
+      if (!context) throw new Error("This image could not be prepared.");
+      context.fillStyle = "#ffffff";
+      context.fillRect(0, 0, canvas.width, canvas.height);
+      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      if (dataUrl.length <= MAX_IMAGE_DATA_CHARS) {
+        const name = file.name.replace(/\.[^.]+$/, "") || "Image";
+        return { id: crypto.randomUUID(), name, dataUrl };
+      }
+      maxDimension *= 0.82;
+      quality = Math.max(0.48, quality - 0.06);
+    }
+    throw new Error("That image is too large to keep on this device.");
+  } finally {
+    bitmap.close();
+  }
+}
+
 export default function Home() {
   const [workspace, setWorkspace] = useState<WorkspaceData>(loadWorkspace);
   const [section, setSection] = useState<Section>("home");
   const [capture, setCapture] = useState("");
+  const [captureTags, setCaptureTags] = useState("");
+  const [captureImages, setCaptureImages] = useState<ImageAttachment[]>([]);
+  const [imagesProcessing, setImagesProcessing] = useState(false);
   const [captureSpace, setCaptureSpace] = useState("");
   const [selectedSpace, setSelectedSpace] = useState<string | null>(null);
+  const [selectedTag, setSelectedTag] = useState("");
   const [dialog, setDialog] = useState<Dialog>(null);
   const [spaceName, setSpaceName] = useState("");
   const [profileNameDraft, setProfileNameDraft] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
   const [linkTitle, setLinkTitle] = useState("");
+  const [editTitle, setEditTitle] = useState("");
+  const [editContent, setEditContent] = useState("");
+  const [editSpace, setEditSpace] = useState("");
+  const [editTags, setEditTags] = useState("");
+  const [editImages, setEditImages] = useState<ImageAttachment[]>([]);
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
@@ -151,20 +215,23 @@ export default function Home() {
 
   const currentSpace = workspace.spaces.find((space) => space.id === selectedSpace);
   const selectedItem = dialog?.type === "item" ? workspace.items.find((item) => item.id === dialog.itemId) : undefined;
+  const editingItem = dialog?.type === "edit" ? workspace.items.find((item) => item.id === dialog.itemId) : undefined;
   const heading = section === "spaces" && currentSpace ? currentSpace.name : NAV.find((item) => item.id === section)?.label ?? "Home";
   const visibleItems = useMemo(() => {
-    if (section === "inbox") return workspace.items.filter((item) => !item.spaceId);
-    if (section === "notes") return workspace.items.filter((item) => item.type === "note");
-    if (section === "links") return workspace.items.filter((item) => item.type === "link");
-    if (section === "spaces" && currentSpace) return workspace.items.filter((item) => item.spaceId === currentSpace.id);
-    return workspace.items;
-  }, [section, workspace.items, currentSpace]);
+    let items = workspace.items;
+    if (section === "inbox") items = items.filter((item) => !item.spaceId);
+    if (section === "notes") items = items.filter((item) => item.type === "note");
+    if (section === "links") items = items.filter((item) => item.type === "link");
+    if (section === "spaces" && currentSpace) items = items.filter((item) => item.spaceId === currentSpace.id);
+    return selectedTag ? items.filter((item) => item.tags?.some((tag) => tag.toLocaleLowerCase() === selectedTag.toLocaleLowerCase())) : items;
+  }, [section, workspace.items, currentSpace, selectedTag]);
+  const availableTags = useMemo(() => Array.from(new Set(workspace.items.flatMap((item) => item.tags ?? []))).sort((a, b) => a.localeCompare(b)), [workspace.items]);
   const recentItems = [...workspace.items].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).slice(0, 4);
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
     if (!query) return { items: workspace.items.slice(0, 5), spaces: workspace.spaces.slice(0, 3) };
     return {
-      items: workspace.items.filter((item) => `${item.title} ${item.content} ${item.url ?? ""}`.toLowerCase().includes(query)).slice(0, 8),
+      items: workspace.items.filter((item) => `${item.title} ${item.content} ${item.url ?? ""} ${(item.tags ?? []).join(" ")}`.toLowerCase().includes(query)).slice(0, 8),
       spaces: workspace.spaces.filter((space) => space.name.toLowerCase().includes(query)).slice(0, 5),
     };
   }, [searchQuery, workspace.items, workspace.spaces]);
@@ -178,14 +245,88 @@ export default function Home() {
 
   const addItem = (item: Omit<SavedItem, "id" | "createdAt">) => {
     const next: SavedItem = { ...item, id: crypto.randomUUID(), createdAt: new Date().toISOString() };
-    setWorkspace((current) => ({ ...current, items: [next, ...current.items] }));
+    const updated = { ...workspace, items: [next, ...workspace.items] };
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(updated));
+    } catch {
+      toast.error("Could not save on this device", { description: "Your browser storage may be full. Remove an attachment or free up space, then try again." });
+      return false;
+    }
+    setWorkspace(updated);
     toast.success(item.type === "link" ? "Link saved" : "Thought saved", { description: item.title });
+    return true;
+  };
+
+  const attachImages = async (event: ChangeEvent<HTMLInputElement>, currentImages: ImageAttachment[], onChange: (images: ImageAttachment[]) => void, replacingItemId?: string) => {
+    const files = Array.from(event.target.files ?? []);
+    event.target.value = "";
+    if (!files.length) return;
+    if (imagesProcessing) return;
+    setImagesProcessing(true);
+    const otherImageChars = workspace.items.filter((item) => item.id !== replacingItemId).reduce((total, item) => total + (item.images ?? []).reduce((sum, image) => sum + image.dataUrl.length, 0), 0);
+    const next = [...currentImages];
+    let usedImageChars = otherImageChars + next.reduce((total, image) => total + image.dataUrl.length, 0);
+    let added = 0;
+    for (const file of files) {
+      if (next.length >= MAX_IMAGES_PER_ITEM) {
+        toast.error(`Keep up to ${MAX_IMAGES_PER_ITEM} images with one item.`);
+        break;
+      }
+      try {
+        const image = await compressImage(file);
+        if (usedImageChars + image.dataUrl.length > MAX_WORKSPACE_IMAGE_CHARS) {
+          toast.error("Your local image space is full", { description: "Remove an old attachment before adding another." });
+          break;
+        }
+        next.push(image);
+        usedImageChars += image.dataUrl.length;
+        added += 1;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "That image could not be attached.");
+      }
+    }
+    if (added) {
+      onChange(next);
+      toast.success(added === 1 ? "Image ready" : `${added} images ready`, { description: "Compressed on this device. Save the item to keep it." });
+    }
+    setImagesProcessing(false);
+  };
+
+  const openEditor = (item: SavedItem) => {
+    setEditTitle(item.title);
+    setEditContent(item.type === "link" ? item.url ?? item.content : item.content);
+    setEditSpace(item.spaceId ?? "");
+    setEditTags((item.tags ?? []).join(", "));
+    setEditImages(item.images ?? []);
+    setDialog({ type: "edit", itemId: item.id });
+  };
+
+  const copyItem = async (item: SavedItem) => {
+    const text = item.type === "link" ? item.url ?? item.content : item.content || item.title;
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const input = document.createElement("textarea");
+      input.value = text;
+      input.style.position = "fixed";
+      input.style.opacity = "0";
+      document.body.appendChild(input);
+      input.select();
+      const copied = document.execCommand("copy");
+      input.remove();
+      if (!copied) {
+        toast.error("Could not copy this item");
+        return;
+      }
+    }
+    toast.success(item.type === "link" ? "Link copied" : "Note copied");
   };
 
   const saveCapture = (event?: FormEvent) => {
     event?.preventDefault();
+    if (imagesProcessing) return;
     const value = capture.trim();
-    if (!value) {
+    if (!value && !captureImages.length) {
       toast("Write a thought to save", { description: "Your captures stay on this device." });
       return;
     }
@@ -196,10 +337,14 @@ export default function Home() {
     } catch {
       parsedUrl = null;
     }
-    addItem(parsedUrl
-      ? { title: getLinkTitle(parsedUrl.toString()), content: parsedUrl.toString(), url: parsedUrl.toString(), type: "link", spaceId: captureSpace || undefined }
-      : { title: value.split("\n")[0].slice(0, 72) || "Untitled note", content: value, type: "note", spaceId: captureSpace || undefined });
+    const tags = normalizeTags(captureTags);
+    const saved = addItem(parsedUrl
+      ? { title: getLinkTitle(parsedUrl.toString()), content: parsedUrl.toString(), url: parsedUrl.toString(), type: "link", spaceId: captureSpace || undefined, tags, images: captureImages }
+      : { title: value.split("\n")[0].slice(0, 72) || captureImages[0]?.name || "Image note", content: value, type: "note", spaceId: captureSpace || undefined, tags, images: captureImages });
+    if (!saved) return;
     setCapture("");
+    setCaptureTags("");
+    setCaptureImages([]);
   };
 
   const createSpace = (event: FormEvent) => {
@@ -235,10 +380,48 @@ export default function Home() {
       toast.error("Enter a valid web address");
       return;
     }
-    addItem({ title: linkTitle.trim() || getLinkTitle(parsed.toString()), content: parsed.toString(), url: parsed.toString(), type: "link", spaceId: captureSpace || undefined });
+    if (!addItem({ title: linkTitle.trim() || getLinkTitle(parsed.toString()), content: parsed.toString(), url: parsed.toString(), type: "link", spaceId: captureSpace || undefined })) return;
     setLinkUrl("");
     setLinkTitle("");
     setDialog(null);
+  };
+
+  const saveEditedItem = (event: FormEvent) => {
+    event.preventDefault();
+    if (!editingItem || imagesProcessing) return;
+    let content = editContent;
+    let url: string | undefined;
+    if (editingItem.type === "link") {
+      try {
+        const parsed = new URL(/^https?:\/\//i.test(editContent.trim()) ? editContent.trim() : `https://${editContent.trim()}`);
+        if (!/^https?:$/.test(parsed.protocol)) throw new Error("Invalid URL");
+        url = parsed.toString();
+        content = url;
+      } catch {
+        toast.error("Enter a valid web address");
+        return;
+      }
+    }
+    const title = editTitle.trim().slice(0, 72) || (url ? getLinkTitle(url) : content.split("\n")[0].slice(0, 72) || editImages[0]?.name || "Image note");
+    const updated: SavedItem = {
+      ...editingItem,
+      title,
+      content,
+      url,
+      spaceId: editSpace || undefined,
+      tags: normalizeTags(editTags),
+      images: editImages,
+    };
+    const nextWorkspace = { ...workspace, items: workspace.items.map((item) => item.id === updated.id ? updated : item) };
+    try {
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(nextWorkspace));
+    } catch {
+      toast.error("Could not save on this device", { description: "Your browser storage may be full. Remove an attachment or free up space, then try again." });
+      return;
+    }
+    setWorkspace(nextWorkspace);
+    setDialog({ type: "item", itemId: updated.id });
+    toast.success("Changes saved", { description: title });
   };
 
   const deleteItem = (id: string) => {
@@ -290,10 +473,11 @@ export default function Home() {
     const Icon = item.type === "link" ? Globe2 : FileText;
     return (
       <button className="saved-item" key={item.id} onClick={() => setDialog({ type: "item", itemId: item.id })}>
-        <span className={`saved-item-icon ${item.type === "link" ? "link-icon" : "note-icon"}`}><Icon size={17} /></span>
+        {item.images?.[0] ? <img className="saved-item-image" src={item.images[0].dataUrl} alt="" /> : <span className={`saved-item-icon ${item.type === "link" ? "link-icon" : "note-icon"}`}><Icon size={17} /></span>}
         <span className="saved-item-copy">
           <strong>{item.title}</strong>
-          <span>{item.type === "link" ? item.url : item.content}</span>
+          <span>{item.type === "link" ? item.url : item.content || `${item.images?.length ?? 0} attached image${item.images?.length === 1 ? "" : "s"}`}</span>
+          {!!item.tags?.length && <span className="item-tags">{item.tags.map((tag) => <span className="item-tag" key={tag}>{tag}</span>)}</span>}
           <small>{spaceName ? `${spaceName} · ` : "Inbox · "}{formatDate(item.createdAt)}</small>
         </span>
         <ArrowUpRight size={16} className="saved-item-arrow" />
@@ -362,9 +546,15 @@ export default function Home() {
                 <div className="capture-heading"><span className="capture-symbol"><PenLine size={16} /></span><div><h3 id="capture-title">Make a note of it</h3><p>Short, messy, unfinished — it all belongs here.</p></div></div>
                 <form onSubmit={saveCapture}>
                   <textarea value={capture} onChange={(event) => setCapture(event.target.value)} onKeyDown={(event) => { if ((event.metaKey || event.ctrlKey) && event.key === "Enter") saveCapture(); }} placeholder="Start anywhere. A rough thought is enough; a web address saves as a link." rows={3} aria-label="Write a thought or paste a link" />
+                  <div className="capture-tools">
+                    <input className="file-input-hidden" id="capture-images" type="file" accept="image/*" multiple disabled={imagesProcessing} onChange={(event) => void attachImages(event, captureImages, setCaptureImages)} />
+                    <label className="attachment-button" htmlFor="capture-images"><ImagePlus size={15} /> {imagesProcessing ? "Preparing…" : "Attach image"}</label>
+                    <label className="capture-tag-field"><Tag size={14} /><input value={captureTags} onChange={(event) => setCaptureTags(event.target.value)} placeholder="Tags, comma separated" aria-label="Tags, comma separated" /></label>
+                  </div>
+                  {!!captureImages.length && <div className="image-preview-row">{captureImages.map((image) => <span className="image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setCaptureImages((images) => images.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}><X size={13} /></button></span>)}</div>}
                   <div className="capture-footer">
                     <label className="capture-space-select"><FolderOpen size={15} /><select aria-label="Choose a space" value={captureSpace} onChange={(event) => setCaptureSpace(event.target.value)}><option value="">Save to inbox</option>{workspace.spaces.map((space) => <option value={space.id} key={space.id}>{space.name}</option>)}</select><ChevronDown size={14} /></label>
-                    <button className="capture-submit" type="submit"><span>Save to desk</span><Send size={15} /></button>
+                    <button className="capture-submit" type="submit" disabled={imagesProcessing}><span>Save to desk</span><Send size={15} /></button>
                   </div>
                 </form>
                 <div className="capture-shortcuts"><span>If you need a nudge</span>{["A question to untangle", "A thing to follow up", "An idea for later"].map((prompt) => <button key={prompt} onClick={() => setCapture(prompt)}>{prompt}<ArrowUpRight size={12} /></button>)}</div>
@@ -386,7 +576,8 @@ export default function Home() {
             <section className="list-page">
               <div className="page-intro"><span className="eyebrow">{section === "inbox" ? "WAITING TO BE SORTED" : section === "notes" ? "NOTES FROM YOURSELF" : "LINKS TO RETURN TO"}</span><h2>{section === "spaces" && currentSpace ? currentSpace.name : section === "inbox" ? "Everything in its own time." : section === "notes" ? "Thoughts you left yourself." : "Pages worth finding again."}</h2><p>{section === "spaces" && currentSpace ? "Notes and links you’ve gathered in this space." : section === "inbox" ? "New captures land here unless you give them a space." : section === "notes" ? "Draft thoughts, small reminders, and ideas that are still taking shape." : "The pages you meant to come back to, without another tab hunt."}</p></div>
               <div className="section-heading list-heading"><div><span className="eyebrow">{visibleItems.length ? "NEWEST ON TOP" : "A CLEAN PAGE"}</span><h2>{visibleItems.length ? `${visibleItems.length} ${visibleItems.length === 1 ? "item" : "items"}` : "Nothing here for now"}</h2></div><div className="list-actions">{currentSpace && <button className="danger-quiet" onClick={() => deleteSpace(currentSpace.id)}><Trash2 size={15} /><span>Delete space</span></button>}{section === "spaces" && <button className="subtle-action back-spaces" onClick={() => setSelectedSpace(null)}><ArrowDownLeft size={15} /> All spaces</button>}{section === "links" ? <button className="gold-button" onClick={() => { setCaptureSpace(""); setDialog({ type: "link" }); }}><Plus size={17} /> Add link</button> : <button className="gold-button" onClick={() => { setSection("home"); setCaptureSpace(currentSpace?.id ?? ""); window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".capture-panel textarea")?.focus(), 50); }}><Plus size={17} /> Capture</button>}</div></div>
-              {visibleItems.length ? <div className="saved-list">{[...visibleItems].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(renderItem)}</div> : <EmptyState icon={section === "links" ? <Link2 size={20} /> : <Inbox size={20} />} title={section === "spaces" ? "This space is ready." : section === "links" ? "No links saved yet." : "The inbox is still empty."} body={section === "spaces" ? "A note or link can start this space whenever you’re ready." : "Leave a note or a link here; it will wait until you need it."} action={section === "links" ? "Save a link" : "Capture a thought"} onAction={() => section === "links" ? setDialog({ type: "link" }) : (setSection("home"), window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".capture-panel textarea")?.focus(), 50))} />}
+              {!!availableTags.length && <div className="tag-filter-row" aria-label="Filter items by tag"><span><Tag size={14} /> Tags</span><button className={!selectedTag ? "tag-filter-active" : ""} onClick={() => setSelectedTag("")}>All</button>{availableTags.map((tag) => <button className={selectedTag.toLocaleLowerCase() === tag.toLocaleLowerCase() ? "tag-filter-active" : ""} key={tag} onClick={() => setSelectedTag(selectedTag.toLocaleLowerCase() === tag.toLocaleLowerCase() ? "" : tag)}>{tag}</button>)}</div>}
+              {visibleItems.length ? <div className="saved-list">{[...visibleItems].sort((a, b) => b.createdAt.localeCompare(a.createdAt)).map(renderItem)}</div> : selectedTag ? <EmptyState icon={<Tag size={20} />} title="Nothing with this tag here." body="Try another tag or show everything in this view." action="Show all" onAction={() => setSelectedTag("")} /> : <EmptyState icon={section === "links" ? <Link2 size={20} /> : <Inbox size={20} />} title={section === "spaces" ? "This space is ready." : section === "links" ? "No links saved yet." : "The inbox is still empty."} body={section === "spaces" ? "A note or link can start this space whenever you’re ready." : "Leave a note or a link here; it will wait until you need it."} action={section === "links" ? "Save a link" : "Capture a thought"} onAction={() => section === "links" ? setDialog({ type: "link" }) : (setSection("home"), window.setTimeout(() => document.querySelector<HTMLTextAreaElement>(".capture-panel textarea")?.focus(), 50))} />}
             </section>
           )}
           <footer className="workspace-footer"><span><span className="footer-check"><Check size={12} /></span> This browser holds your only copy</span><span>No account. No cloud sync.</span></footer>
@@ -403,7 +594,26 @@ export default function Home() {
 
       {dialog?.type === "link" && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><form className="form-modal" onSubmit={saveLink} role="dialog" aria-modal="true" aria-labelledby="link-modal-title"><div className="modal-top"><span className="modal-symbol"><Link2 size={18} /></span><button type="button" className="icon-button" onClick={() => setDialog(null)} aria-label="Close"><X size={18} /></button></div><span className="eyebrow">KEEP THE TAB, CLOSE THE TAB</span><h2 id="link-modal-title">Save a link</h2><p>Keep the page. Close the extra tab. It’ll be here when you want it.</p><label className="field-label" htmlFor="link-url">Web address</label><input id="link-url" autoFocus type="url" value={linkUrl} onChange={(event) => setLinkUrl(event.target.value)} placeholder="https://example.com/article" /><label className="field-label field-label-spaced" htmlFor="link-title">Name it <span>Optional</span></label><input id="link-title" value={linkTitle} onChange={(event) => setLinkTitle(event.target.value)} placeholder="A short, useful title" maxLength={72} /><label className="field-label field-label-spaced" htmlFor="link-space">Add to</label><select id="link-space" className="modal-select" value={captureSpace} onChange={(event) => setCaptureSpace(event.target.value)}><option value="">Inbox</option>{workspace.spaces.map((space) => <option value={space.id} key={space.id}>{space.name}</option>)}</select><div className="modal-actions"><button className="cancel-button" type="button" onClick={() => setDialog(null)}>Cancel</button><button className="gold-button" type="submit" disabled={!linkUrl.trim()}><Bookmark size={16} /> Save link</button></div></form></div>}
 
-      {selectedItem && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><div className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title"><div className="modal-top"><span className={`modal-symbol ${selectedItem.type === "link" ? "link-symbol" : ""}`}>{selectedItem.type === "link" ? <Globe2 size={18} /> : <FileText size={18} />}</span><button type="button" className="icon-button" onClick={() => setDialog(null)} aria-label="Close"><X size={18} /></button></div><span className="eyebrow">{selectedItem.type === "link" ? "SAVED LINK" : "SAVED NOTE"} · {formatDate(selectedItem.createdAt)}</span><h2 id="detail-title">{selectedItem.title}</h2>{selectedItem.type === "link" ? <><p className="detail-content">{selectedItem.url}</p><a className="gold-button detail-open-link" href={selectedItem.url} target="_blank" rel="noreferrer">Open link <ArrowUpRight size={15} /></a></> : <p className="detail-content note-detail-content">{selectedItem.content}</p>}<div className="detail-bottom"><span>{workspace.spaces.find((space) => space.id === selectedItem.spaceId)?.name ?? "Inbox"}</span><button className="danger-quiet" onClick={() => deleteItem(selectedItem.id)}><Trash2 size={15} /><span>Delete</span></button></div></div></div>}
+      {selectedItem && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog(null); }}><div className="detail-modal" role="dialog" aria-modal="true" aria-labelledby="detail-title">
+        <div className="modal-top"><span className={`modal-symbol ${selectedItem.type === "link" ? "link-symbol" : ""}`}>{selectedItem.type === "link" ? <Globe2 size={18} /> : <FileText size={18} />}</span><button type="button" className="icon-button" onClick={() => setDialog(null)} aria-label="Close"><X size={18} /></button></div>
+        <span className="eyebrow">{selectedItem.type === "link" ? "SAVED LINK" : "SAVED NOTE"} · {formatDate(selectedItem.createdAt)}</span><h2 id="detail-title">{selectedItem.title}</h2>
+        {selectedItem.type === "link" ? <><p className="detail-content">{selectedItem.url}</p><a className="gold-button detail-open-link" href={selectedItem.url} target="_blank" rel="noreferrer">Open link <ArrowUpRight size={15} /></a></> : <p className="detail-content note-detail-content">{selectedItem.content || "An image note."}</p>}
+        {!!selectedItem.images?.length && <div className="detail-images">{selectedItem.images.map((image) => <figure key={image.id}><img src={image.dataUrl} alt={image.name} /><figcaption>{image.name}</figcaption></figure>)}</div>}
+        {!!selectedItem.tags?.length && <div className="detail-tags"><Tag size={14} />{selectedItem.tags.map((tag) => <span className="item-tag" key={tag}>{tag}</span>)}</div>}
+        <div className="detail-bottom"><span className="detail-folder"><FolderOpen size={14} />{workspace.spaces.find((space) => space.id === selectedItem.spaceId)?.name ?? "Inbox"}</span><div className="detail-actions"><button className="detail-tool-button" onClick={() => void copyItem(selectedItem)}><Copy size={14} /> Copy</button><button className="detail-tool-button" onClick={() => openEditor(selectedItem)}><Pencil size={14} /> Edit</button><button className="danger-quiet" onClick={() => deleteItem(selectedItem.id)}><Trash2 size={14} /><span>Delete</span></button></div></div>
+      </div></div>}
+
+      {editingItem && <div className="modal-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) setDialog({ type: "item", itemId: editingItem.id }); }}><form className="form-modal item-edit-modal" onSubmit={saveEditedItem} role="dialog" aria-modal="true" aria-labelledby="edit-item-title">
+        <div className="modal-top"><span className="modal-symbol"><Pencil size={18} /></span><button type="button" className="icon-button" onClick={() => setDialog({ type: "item", itemId: editingItem.id })} aria-label="Close"><X size={18} /></button></div>
+        <span className="eyebrow">MAKE IT YOURS</span><h2 id="edit-item-title">Edit {editingItem.type === "link" ? "link" : "note"}</h2>
+        <label className="field-label" htmlFor="edit-item-name">Title</label><input id="edit-item-name" autoFocus value={editTitle} onChange={(event) => setEditTitle(event.target.value)} maxLength={72} />
+        {editingItem.type === "link" ? <><label className="field-label field-label-spaced" htmlFor="edit-item-content">Web address</label><input id="edit-item-content" type="url" value={editContent} onChange={(event) => setEditContent(event.target.value)} /></> : <><label className="field-label field-label-spaced" htmlFor="edit-item-content">Note</label><textarea className="edit-textarea" id="edit-item-content" value={editContent} onChange={(event) => setEditContent(event.target.value)} rows={6} /></>}
+        <label className="field-label field-label-spaced" htmlFor="edit-item-space">Move to folder</label><select id="edit-item-space" className="modal-select" value={editSpace} onChange={(event) => setEditSpace(event.target.value)}><option value="">Inbox</option>{workspace.spaces.map((space) => <option key={space.id} value={space.id}>{space.name}</option>)}</select>
+        <label className="field-label field-label-spaced" htmlFor="edit-item-tags">Tags <span>Separate with commas</span></label><input id="edit-item-tags" value={editTags} onChange={(event) => setEditTags(event.target.value)} placeholder="e.g. idea, follow-up" />
+        <div className="edit-attachments"><input className="file-input-hidden" id="edit-item-images" type="file" accept="image/*" multiple disabled={imagesProcessing} onChange={(event) => void attachImages(event, editImages, setEditImages, editingItem.id)} /><label className="attachment-button" htmlFor="edit-item-images"><ImagePlus size={15} /> {imagesProcessing ? "Preparing…" : "Add images"}</label><span>{editImages.length}/{MAX_IMAGES_PER_ITEM}</span></div>
+        {!!editImages.length && <div className="image-preview-row">{editImages.map((image) => <span className="image-preview" key={image.id}><img src={image.dataUrl} alt={image.name} /><button type="button" onClick={() => setEditImages((images) => images.filter((item) => item.id !== image.id))} aria-label={`Remove ${image.name}`}><X size={13} /></button></span>)}</div>}
+        <div className="modal-actions"><button className="cancel-button" type="button" onClick={() => setDialog({ type: "item", itemId: editingItem.id })}>Cancel</button><button className="gold-button" type="submit" disabled={imagesProcessing}><Check size={16} /> Save changes</button></div>
+      </form></div>}
 
       {installVisible && <div className="install-banner"><span className="install-icon"><DownloadIcon /></span><span><strong>Keep Work Layer close</strong><small>A small desk for your phone or computer.</small></span><button onClick={installApp}>Install</button><button className="install-dismiss" onClick={() => setInstallVisible(false)} aria-label="Dismiss install message"><X size={16} /></button></div>}
     </div>

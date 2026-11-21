@@ -1,12 +1,12 @@
 {
-  "name": "Layer Workspace",
-  "short_name": "Layer",
-  "description": "A local-first space to capture thoughts, save links, and organize ideas.",
+  "name": "Work Layer",
+  "short_name": "Work Layer",
+  "description": "A small desk for thoughts, useful links, and work in progress. Your notes stay in this browser.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0b1930",
-  "theme_color": "#0b1930",
+  "background_color": "#f6f2e9",
+  "theme_color": "#f6f2e9",
   "icons": [
     {
       "src": "./layer-icon.svg",
